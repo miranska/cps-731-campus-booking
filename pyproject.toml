@@ -1,0 +1,20 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+
+[tool.coverage.run]
+source = ["booking"]
+branch = true
+relative_files = true
+
+[tool.coverage.report]
+show_missing = true
