@@ -1,4 +1,8 @@
 # Campus resource booking starter
+[![Lint status](https://github.com/miranska/cps-731-campus-booking/actions/workflows/lint-status.yml/badge.svg?branch=main&event=workflow_run)](https://github.com/miranska/cps-731-campus-booking/actions/workflows/ci.yml?query=branch%3Amain)
+[![Test status](https://github.com/miranska/cps-731-campus-booking/actions/workflows/test-status.yml/badge.svg?branch=main&event=workflow_run)](https://github.com/miranska/cps-731-campus-booking/actions/workflows/ci.yml?query=branch%3Amain)
+[![Coverage](https://github.com/miranska/cps-731-campus-booking/raw/python-coverage-comment-action-data/badge.svg)](https://github.com/miranska/cps-731-campus-booking/tree/python-coverage-comment-action-data)
+[![Python 3.14](https://img.shields.io/badge/python-3.14-blue?logo=python&logoColor=white)](https://www.python.org/downloads/)
 
 This is a **course simulation of an existing system**, created for CPS731.
 Browse resources and create, retrieve, list and cancel persistent single bookings.
