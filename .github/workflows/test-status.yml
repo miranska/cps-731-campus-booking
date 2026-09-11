@@ -1,0 +1,28 @@
+name: Tests
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  status:
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+    steps:
+      # GitHub-hosted workflow badges work inside private repositories.
+      # Read the completed job result without checking out or executing its code.
+      - name: Report CI test result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | select(.name == "Tests and coverage") | .conclusion')
+          printf 'Tests and coverage: %s\n' "$conclusion"
+          test "$conclusion" = success
