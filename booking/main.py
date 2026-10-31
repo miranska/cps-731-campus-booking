@@ -12,7 +12,7 @@ from sqlmodel import Session, SQLModel, col, select
 
 from booking.clock import campus_now
 from booking.database import database_path, make_engine
-from booking.models import Booking, Resource, User
+from booking.models import Booking, Resource, User, Series
 from booking.schemas import BookingCreate, BookingRead, ErrorResponse
 
 
@@ -156,5 +156,10 @@ def create_app(
             session.commit()
             session.refresh(booking)
             return booking
+
+
+    # work with series
+
+
 
     return app
