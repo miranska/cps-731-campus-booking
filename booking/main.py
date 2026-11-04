@@ -13,7 +13,7 @@ from sqlmodel import Session, SQLModel, col, select
 from booking.clock import campus_now
 from booking.database import database_path, make_engine
 from booking.models import Booking, Resource, User, Series
-from booking.schemas import BookingCreate, BookingRead, ErrorResponse
+from booking.schemas import BookingCreate, BookingRead, ErrorResponse, SeriesCreate, SeriesRead
 
 
 def create_app(
@@ -159,7 +159,87 @@ def create_app(
 
 
     # work with series
-
-
+    @app.post(
+        "/series",
+        response_model = SeriesRead,
+        status_code=201,
+        responses = {
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+        },
+    )
+    def create_series(
+        request: SeriesCreate,
+        x_user_id: Annotated[int, Header(gt = 0, le = 9223372036854775807)],
+    ) -> SeriesRead:
+        with Session(engine) as session:
+            #Check that user exists
+            if session.get(User, x_user_id) is None:
+                raise HTTPException(404, "Unknown User")
+            #Check that resource exists
+            if session.get(Resource, request.resource_id) is None:
+                raise HTTPException(404, "Unknown Resource")
+            #Validate all weeks before creating anything
+            intervals = []
+            now = clock()
+            for week in range(request.count):
+                start = request.start + timedelta(weeks = week)
+                end = request.end + timedelta(weeks = week)
+                if start <= now:
+                    raise HTTPException(422, "Start must be in the future")
+                if end <= start:
+                    raise HTTPException(422, "End must be after start")
+                if end - start > timedelta(hours = 8):
+                    raise HTTPException(422, "Duration must be at most eight hours")
+                conflict = session.exec(
+                    select(Booking).where(
+                        Booking.resource_id == request.resource_id,
+                        col(Booking.cancelled).is_(False),
+                        Booking.start < end,
+                        Booking.end > start,
+                    )
+                ).first()
+                if conflict is not None:
+                    raise HTTPException(409, "Resource is already booked for this interval")
+                intervals.append((start, end))
+            #Create series only after all weeks pass
+            series = Series(
+                owner_id = x_user_id,
+                resource_id = request.resource_id,
+                start = request.start,
+                end = request.end,
+                count = request.count,
+            )
+            session.add(series)
+            session.flush()
+            #Create all weekly bookings
+            bookings = []
+            for start, end in intervals:
+                booking = Booking(
+                    owner_id = x_user_id,
+                    resource_id = request.resource_id,
+                    start = start,
+                    end = end,
+                    cancelled = False,
+                    series_id = series.id,
+                )
+                session.add(booking)
+                bookings.append(booking)
+            #One commit saves everything
+            session.commit()
+            session.refresh(series)
+            for booking in bookings:
+                session.refresh(booking)
+            return SeriesRead(
+                id = series.id,
+                owner_id = series.owner_id,
+                resource_id = series.resource_id,
+                occurrences = [
+                    BookingRead.model_validate(
+                        booking, from_attributes = True
+                    )
+                    for booking in bookings
+                ],
+            )
 
     return app
