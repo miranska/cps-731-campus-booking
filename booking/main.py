@@ -12,8 +12,49 @@ from sqlmodel import Session, SQLModel, col, select
 
 from booking.clock import campus_now
 from booking.database import database_path, make_engine
-from booking.models import Booking, Resource, User, Series
-from booking.schemas import BookingCreate, BookingRead, ErrorResponse, SeriesCreate, SeriesRead
+from booking.models import Booking, Resource, Series, User
+from booking.schemas import (
+    BookingCreate,
+    BookingRead,
+    ErrorResponse,
+    SeriesCreate,
+    SeriesRead,
+)
+
+MAX_DURATION = timedelta(hours=8)
+
+
+def validate_interval(start: datetime, end: datetime, now: datetime) -> None:
+    """Apply the booking time rules shared by single and recurring bookings.
+
+    Start must be strictly after now, end must follow start, and the duration
+    must be at most eight hours. Overnight intervals are allowed. Raises 422
+    with the baseline error messages.
+    """
+    if start <= now:
+        raise HTTPException(422, "Start must be in the future")
+    if end <= start:
+        raise HTTPException(422, "End must be after start")
+    if end - start > MAX_DURATION:
+        raise HTTPException(422, "Duration must be at most eight hours")
+
+
+def find_conflict(
+    session: Session, resource_id: int, start: datetime, end: datetime
+) -> Booking | None:
+    """Return an uncancelled booking on the resource overlapping [start, end).
+
+    Intervals include start and exclude end, so back-to-back bookings do not
+    conflict. Covers single bookings and series occurrences alike.
+    """
+    return session.exec(
+        select(Booking).where(
+            Booking.resource_id == resource_id,
+            col(Booking.cancelled).is_(False),
+            Booking.start < end,
+            Booking.end > start,
+        )
+    ).first()
 
 
 def create_app(
@@ -75,21 +116,11 @@ def create_app(
                 raise HTTPException(404, "Unknown user")
             if session.get(Resource, request.resource_id) is None:
                 raise HTTPException(404, "Unknown resource")
-            if request.start <= clock():
-                raise HTTPException(422, "Start must be in the future")
-            if request.end <= request.start:
-                raise HTTPException(422, "End must be after start")
-            if request.end - request.start > timedelta(hours=8):
-                raise HTTPException(422, "Duration must be at most eight hours")
-            conflict = session.exec(
-                select(Booking).where(
-                    Booking.resource_id == request.resource_id,
-                    col(Booking.cancelled).is_(False),
-                    Booking.start < request.end,
-                    Booking.end > request.start,
-                )
-            ).first()
-            if conflict is not None:
+            validate_interval(request.start, request.end, clock())
+            if (
+                find_conflict(session, request.resource_id, request.start, request.end)
+                is not None
+            ):
                 raise HTTPException(409, "Resource is already booked for this interval")
             booking = Booking(owner_id=x_user_id, **request.model_dump())
             session.add(booking)
@@ -157,87 +188,74 @@ def create_app(
             session.refresh(booking)
             return booking
 
-
-    # work with series
     @app.post(
         "/series",
-        response_model = SeriesRead,
+        response_model=SeriesRead,
         status_code=201,
-        responses = {
-            404: {"model": ErrorResponse},
-            409: {"model": ErrorResponse},
-        },
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
     )
     def create_series(
         request: SeriesCreate,
-        x_user_id: Annotated[int, Header(gt = 0, le = 9223372036854775807)],
+        x_user_id: Annotated[int, Header(gt=0, le=9223372036854775807)],
     ) -> SeriesRead:
+        """Create a weekly series of 1 to 12 bookings owned by X-User-ID.
+
+        Every occurrence follows the single-booking time and conflict rules.
+        All occurrences are checked before anything is written, then the series
+        and its bookings are saved in one commit, so a failed request leaves no
+        partial series. Sequential requests only; simultaneous requests may race
+        between availability checking and insertion.
+        """
         with Session(engine) as session:
-            #Check that user exists
             if session.get(User, x_user_id) is None:
-                raise HTTPException(404, "Unknown User")
-            #Check that resource exists
+                raise HTTPException(404, "Unknown user")
             if session.get(Resource, request.resource_id) is None:
-                raise HTTPException(404, "Unknown Resource")
-            #Validate all weeks before creating anything
-            intervals = []
+                raise HTTPException(404, "Unknown resource")
+            # Validate every week before creating anything.
             now = clock()
+            intervals: list[tuple[datetime, datetime]] = []
             for week in range(request.count):
-                start = request.start + timedelta(weeks = week)
-                end = request.end + timedelta(weeks = week)
-                if start <= now:
-                    raise HTTPException(422, "Start must be in the future")
-                if end <= start:
-                    raise HTTPException(422, "End must be after start")
-                if end - start > timedelta(hours = 8):
-                    raise HTTPException(422, "Duration must be at most eight hours")
-                conflict = session.exec(
-                    select(Booking).where(
-                        Booking.resource_id == request.resource_id,
-                        col(Booking.cancelled).is_(False),
-                        Booking.start < end,
-                        Booking.end > start,
+                start = request.start + timedelta(weeks=week)
+                end = request.end + timedelta(weeks=week)
+                validate_interval(start, end, now)
+                if find_conflict(session, request.resource_id, start, end) is not None:
+                    raise HTTPException(
+                        409, "Resource is already booked for this interval"
                     )
-                ).first()
-                if conflict is not None:
-                    raise HTTPException(409, "Resource is already booked for this interval")
                 intervals.append((start, end))
-            #Create series only after all weeks pass
+            # Create the series only after all weeks pass.
             series = Series(
-                owner_id = x_user_id,
-                resource_id = request.resource_id,
-                start = request.start,
-                end = request.end,
-                count = request.count,
+                owner_id=x_user_id,
+                resource_id=request.resource_id,
+                start=request.start,
+                end=request.end,
+                count=request.count,
             )
             session.add(series)
             session.flush()
-            #Create all weekly bookings
-            bookings = []
-            for start, end in intervals:
-                booking = Booking(
-                    owner_id = x_user_id,
-                    resource_id = request.resource_id,
-                    start = start,
-                    end = end,
-                    cancelled = False,
-                    series_id = series.id,
+            bookings = [
+                Booking(
+                    owner_id=x_user_id,
+                    resource_id=request.resource_id,
+                    start=start,
+                    end=end,
+                    series_id=series.id,
                 )
-                session.add(booking)
-                bookings.append(booking)
-            #One commit saves everything
+                for start, end in intervals
+            ]
+            session.add_all(bookings)
+            # One commit saves the series and every booking, or nothing.
             session.commit()
             session.refresh(series)
             for booking in bookings:
                 session.refresh(booking)
+            assert series.id is not None
             return SeriesRead(
-                id = series.id,
-                owner_id = series.owner_id,
-                resource_id = series.resource_id,
-                occurrences = [
-                    BookingRead.model_validate(
-                        booking, from_attributes = True
-                    )
+                id=series.id,
+                owner_id=series.owner_id,
+                resource_id=series.resource_id,
+                occurrences=[
+                    BookingRead.model_validate(booking, from_attributes=True)
                     for booking in bookings
                 ],
             )

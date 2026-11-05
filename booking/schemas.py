@@ -47,12 +47,14 @@ class BookingRead(BaseModel):
     end: datetime
     cancelled: bool
 
+
 class SeriesCreate(BaseModel):
-    model_config = ConfigDict (extra = "forbid")
-    resource_id: int = Field(strict = True, gt = 0, le = 9223372036854775807)
+    model_config = ConfigDict(extra="forbid")
+    resource_id: int = Field(strict=True, gt=0, le=9223372036854775807)
     start: CampusTimestamp
     end: CampusTimestamp
-    count: int = Field(strict = True, ge = 1, le = 12)
+    count: int = Field(strict=True, ge=1, le=12)
+
 
 class SeriesRead(BaseModel):
     id: int
