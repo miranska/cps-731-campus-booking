@@ -260,4 +260,38 @@ def create_app(
                 ],
             )
 
+    @app.get(
+        "/series/{series_id}",
+        response_model=SeriesRead,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def get_series(
+        series_id: Annotated[int, ApiPath(gt=0, le=9223372036854775807)],
+    ) -> SeriesRead:
+        """Retrieve a series and all its occurrences"""
+        with Session(engine) as session:
+            series = session.get(Series, series_id)
+
+            if series is None:
+                raise HTTPException(404, "Unknown series")
+
+            # Get all bookings belonging to this series
+            statement = (
+                select(Booking)
+                .where(Booking.series_id == series_id)
+                .order_by(col(Booking.start))
+            )
+
+            bookings = session.exec(statement).all()
+
+            return SeriesRead(
+                id=series_id,
+                owner_id=series.owner_id,
+                resource_id=series.resource_id,
+                occurrences=[
+                    BookingRead.model_validate(booking, from_attributes=True)
+                    for booking in bookings
+                ],
+            )
+
     return app
