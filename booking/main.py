@@ -260,55 +260,80 @@ def create_app(
                 ],
             )
 
+    @app.get(
+        "/series/{series_id}",
+        response_model=SeriesRead,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def get_series(
+        series_id: Annotated[int, ApiPath(gt=0, le=9223372036854775807)],
+    ) -> SeriesRead:
+        """Retrieve a series and all its occurrences"""
+        with Session(engine) as session:
+            series = session.get(Series, series_id)
+
+            if series is None:
+                raise HTTPException(404, "Unknown series")
+
+            # Get all bookings belonging to this series
+            statement = (
+                select(Booking)
+                .where(Booking.series_id == series_id)
+                .order_by(col(Booking.start))
+            )
+
+            bookings = session.exec(statement).all()
+
+            return SeriesRead(
+                id=series_id,
+                owner_id=series.owner_id,
+                resource_id=series.resource_id,
+                occurrences=[
+                    BookingRead.model_validate(booking, from_attributes=True)
+                    for booking in bookings
+                ],
+            )
+
     @app.post(
         "/series/{series_id}/cancel",
         response_model=SeriesRead,
-        status_code=200,
-        responses={
-            403: {"model": ErrorResponse},
-            404: {"model": ErrorResponse},
-            409: {"model": ErrorResponse},
-        },
+        responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
     )
     def cancel_series(
         series_id: Annotated[int, ApiPath(gt=0, le=9223372036854775807)],
         x_user_id: Annotated[int, Header(gt=0, le=9223372036854775807)],
     ) -> SeriesRead:
-        """Cancel all bookings of series_id as its owner using X-User-ID.
+        """Cancel every remaining future occurrence of a series as its owner.
 
-        Follows same rules as standard booking cancellation, checking user identity
-        and booking clock.
-        Returns series representation
+        Checks the user, then the series, then ownership (403 for anyone else,
+        including on repeats). Occurrences that have started or ended are left
+        unchanged, and that is not an error. Already-cancelled occurrences stay
+        as they are, so a repeat request changes nothing. All cancellations are
+        saved in one commit. Returns the series with every occurrence.
         """
         with Session(engine) as session:
             if session.get(User, x_user_id) is None:
                 raise HTTPException(404, "Unknown user")
-
-            # add check for series existence
             series = session.get(Series, series_id)
             if series is None:
                 raise HTTPException(404, "Unknown series")
-
-            # !-- change below with for-loop using occurences from session get series
-            stmt = select(Booking).where(Booking.series_id == series_id)
-            bookings = session.scalars(stmt).all()
+            if series.owner_id != x_user_id:
+                raise HTTPException(403, "Only the owner can cancel this series")
+            now = clock()
+            bookings = list(
+                session.exec(
+                    select(Booking)
+                    .where(Booking.series_id == series_id)
+                    .order_by(col(Booking.start))
+                ).all()
+            )
             for booking in bookings:
-                # within for-loop: check for exceptions
-                if booking is None:
-                    raise HTTPException(404, "Unknown booking")
-                if booking.owner_id != x_user_id:
-                    raise HTTPException(403, "Only the owner can cancel this booking")
-                if booking.start <= clock():
-                    raise HTTPException(409, "Booking has already started")
-                # if pass - cancel booking and add to session
-                booking.cancelled = True
-                session.add(booking)
-
-            # commits all cancellations at once
+                if not booking.cancelled and booking.start > now:
+                    booking.cancelled = True
+                    session.add(booking)
             session.commit()
-            session.refresh(booking)
-            session.refresh(series)
-            # return series
+            for booking in bookings:
+                session.refresh(booking)
             return SeriesRead(
                 id=series_id,
                 owner_id=series.owner_id,
