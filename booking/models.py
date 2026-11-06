@@ -21,11 +21,13 @@ class Booking(SQLModel, table=True):
     start: datetime
     end: datetime
     cancelled: bool = False
+    series_id: int | None = Field(default=None, foreign_key="series.id")
+
 
 class Series(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    owner_id: int = Field(foreign_key="user.id") -- "do not accept owner ID"
+    owner_id: int = Field(foreign_key="user.id")
     resource_id: int = Field(foreign_key="resource.id")
     start: datetime
     end: datetime
-    count: int 
+    count: int
