@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session as OrmSession
 
 from booking.database import initialize
 from booking.main import create_app
+from booking.models import Booking
 
 NOW = datetime(2030, 1, 15, 9)
 ALEX = {"X-User-ID": "1"}
@@ -303,23 +304,28 @@ def test_different_resource_does_not_conflict(api: Api) -> None:
     assert len(response.json()["occurrences"]) == 6
 
 
-# V17: C5. A failure after rows are written but before the transaction
-# completes must roll everything back. The fault is injected after the
-# first flush, so it works whether the code flushes explicitly or commits.
+# V17: C5. A failure after the booking rows are written but before the
+# transaction completes must roll everything back, including the series row
+# flushed earlier. The fault fires on the flush that writes Booking rows.
 def test_failure_mid_write_leaves_no_partial_series(api: Api) -> None:
     book_single(api, "2030-01-16T10:00:00", "2030-01-16T11:00:00")
     before = stored_state(api.database)
     bookings_before = api.client.get("/bookings").json()
+    flushed_bookings: list[int] = []
 
-    def fail_after_flush(session: OrmSession, context: object) -> None:
-        raise RuntimeError("injected failure after rows were flushed")
+    def fail_after_booking_flush(session: OrmSession, context: object) -> None:
+        new_bookings = [o for o in session.new if isinstance(o, Booking)]
+        if new_bookings:
+            flushed_bookings.append(len(new_bookings))
+            raise RuntimeError("injected failure after booking rows were flushed")
 
-    event.listen(OrmSession, "after_flush", fail_after_flush)
+    event.listen(OrmSession, "after_flush", fail_after_booking_flush)
     try:
         with pytest.raises(RuntimeError, match="injected failure"):
             api.client.post("/series", headers=ALEX, json=series_request(count=6))
     finally:
-        event.remove(OrmSession, "after_flush", fail_after_flush)
+        event.remove(OrmSession, "after_flush", fail_after_booking_flush)
 
+    assert flushed_bookings == [6]
     assert api.client.get("/bookings").json() == bookings_before
     assert stored_state(api.database) == before
