@@ -5,7 +5,7 @@
 [![Python 3.14](https://img.shields.io/badge/python-3.14-blue?logo=python&logoColor=white)](https://www.python.org/downloads/)
 
 This is a **course simulation of an existing system**, created for CPS731.
-Browse resources and create, retrieve, list and cancel persistent single bookings.
+Browse resources and create, retrieve, list and cancel persistent single bookings and weekly recurring reservations.
 
 ## Run locally
 
@@ -166,6 +166,60 @@ A missing/malformed identity header also returns 422. Rejected creation or cance
 all persisted bookings unchanged. Cancellation resolves the seeded user before
 looking up the booking; unknown users and bookings return 404. The interactive docs describe these operations
 and their response models.
+
+## Weekly Recurring Reservations
+
+The service supports weekly recurring reservations for the same resource at the same campus-local time. A single request creates 1 to 12 occurrences, each exactly seven day apart.
+
+### Series API
+
+| Operation | Request | Success |
+| --- | --- | --- |
+| `POST /series` | `X-User-ID` header and JSON below | 201, stored series with occurrences |
+| `GET /series/{series_id}` | Positive integer ID; no identity | 200, stored series with all occurrences |
+| `POST /series/{series_id}/cancel` | Positive integer ID and `X-User-ID`; no body needed | 200, updated series |
+
+Series creation accepts exactly `resource_id`, `start`, `end` and `count`. Extra fields, including `owner_id`, `id` and `cancelled`, are rejected. The `count` must be an integer from 1 to 12 and includes the first booking.
+
+Example request:
+
+```json
+{"resource_id": 1, "start": "2030-01-15T10:00:00", "end": "2030-01-15T11:00:00", "count": 3}
+```
+
+With `X-User-ID: 1`, this creates three bookings for resource 1 on January 15, 22 and 29, 2030, from 10:00 to 11:00. Replace the dates with future dates when testing against the live server.
+
+The acting user owns the series and all its occurrences. Ownership comes from `X-User-ID`, not the request body.
+
+Every occurrence must start strictly in the future, end after its start and last no longer than eight hours. Overnight bookings are permitted within the duration limit. Back-to-back bookings do not conflict.
+
+Every occurrence is checked against existing uncancelled bookings on the same resource. If any occurrence conflicts, the entire request returns 409 and no new series or bookings are created. Once all checks pass, the series and its occurrences are saved in one database transaction.
+
+### Retrieving and Cancelling a Series
+
+`GET /series/{series_id}` returns the stored series and all its occurrences, including past and cancelled records.
+
+To cancel a single occurrence, use the existing booking cancellation endpoint:
+
+```sh
+curl -X POST -H 'X-User-ID: 1' http://127.0.0.1:8000/bookings/1/cancel
+```
+
+To cancel all remaining future occurrences in a series:
+
+```sh
+curl -X POST -H 'X-User-ID: 1' http://127.0.0.1:8000/series/1/cancel
+```
+
+Substitute the IDs returned by creation.
+
+Only the owner can cancel a series. Series cancellation marks uncancelled occurrences whose start times are strictly in the future as cancelled. Past and ongoing occurrences remain unchanged. Cancelled records remain available in reads and no longer occupy their resource slots.
+
+Repeating a completed series cancellation returns 200 without additional changes. A non-owner receives 403, including when the series was already cancelled.
+
+Series data and its linked bookings persist after restarting the application. Existing single bookings continue to work without belonging to a series.
+
+The implementation guarantees correct behaviour for sequential requests. Simultaneous reservation conflicts and daylight-saving transitions are outside the required simulation scope.
 
 ### Run the full worked example
 
