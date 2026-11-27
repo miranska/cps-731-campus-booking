@@ -5,9 +5,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
+from sqlmodel import Session
 
-from booking.database import initialize
+from booking.database import initialize, make_engine
 from booking.main import create_app
+from booking.models import Booking
 
 
 @pytest.fixture
@@ -116,6 +118,59 @@ def test_create_retrieve_and_list_booking(client: TestClient) -> None:
     assert response.json() == expected
     assert client.get("/bookings/1").json() == expected
     assert client.get("/bookings").json() == [expected]
+
+
+def test_rooms_can_be_booked_at_the_same_time(client: TestClient) -> None:
+    for room in (1, 2):
+        assert book(client, "10:00:00", "11:00:00", resource_id=room).status_code == 201
+
+
+def test_device_rejects_overlap_and_accepts_back_to_back(client: TestClient) -> None:
+    camera = 3
+    existing = book(client, "10:00:00", "11:00:00", resource_id=camera)
+    assert existing.status_code == 201
+    assert_booking_conflict(book(client, "10:59:00", "12:00:00", resource_id=camera))
+    assert client.get("/bookings").json() == [existing.json()]
+    assert book(client, "11:00:00", "12:00:00", resource_id=camera).status_code == 201
+
+
+def test_existing_confirmations_with_short_gap_are_honoured(tmp_path: Path) -> None:
+    database = tmp_path / "booking.sqlite3"
+    initialize(database)
+    # These two confirmations were valid under the original overlap-only rule.
+    confirmations = [
+        Booking(
+            id=1,
+            owner_id=1,
+            resource_id=1,
+            start=datetime(2030, 1, 15, 10),
+            end=datetime(2030, 1, 15, 11),
+        ),
+        Booking(
+            id=2,
+            owner_id=2,
+            resource_id=1,
+            start=datetime(2030, 1, 15, 11, 10),
+            end=datetime(2030, 1, 15, 12),
+        ),
+    ]
+    expected = [booking.model_dump(mode="json") for booking in confirmations]
+    engine = make_engine(database)
+    with Session(engine) as session:
+        session.add_all(confirmations)
+        session.commit()
+    engine.dispose()
+
+    with TestClient(
+        create_app(database, clock=lambda: datetime(2030, 1, 15, 8))
+    ) as api:
+        assert api.get("/bookings").json() == expected
+        assert_booking_conflict(book(api, "09:00:00", "09:46:00"))
+        assert_booking_conflict(book(api, "12:14:00", "13:00:00"))
+        assert api.get("/bookings").json() == expected
+        new_booking = book(api, "12:15:00", "13:00:00")
+        assert new_booking.status_code == 201
+        assert api.get("/bookings").json() == [*expected, new_booking.json()]
 
 
 @pytest.mark.parametrize(

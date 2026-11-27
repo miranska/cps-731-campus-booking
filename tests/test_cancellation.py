@@ -36,6 +36,33 @@ def test_owner_cancels_and_reuses_slot_after_restart(tmp_path: Path) -> None:
         }
 
 
+def test_cancelling_a_room_releases_its_gap(tmp_path: Path) -> None:
+    database = tmp_path / "booking.sqlite3"
+    initialize(database)
+    next_slot = {**BODY, "start": BODY["end"], "end": "2030-01-15T12:00:00"}
+    other_user = {"X-User-ID": "2"}
+    with TestClient(
+        create_app(database, clock=lambda: datetime(2030, 1, 15, 9))
+    ) as api:
+        created = api.post("/bookings", headers={"X-User-ID": "1"}, json=BODY)
+        assert created.status_code == 201
+
+        conflict = api.post("/bookings", headers=other_user, json=next_slot)
+        assert conflict.status_code == 409
+        assert conflict.json() == {
+            "detail": "Resource is already booked for this interval"
+        }
+        assert api.get("/bookings").json() == [created.json()]
+
+        cancelled = api.post("/bookings/1/cancel", headers={"X-User-ID": "1"})
+        assert cancelled.status_code == 200
+        assert cancelled.json() == {**created.json(), "cancelled": True}
+        accepted = api.post("/bookings", headers=other_user, json=next_slot)
+        assert accepted.status_code == 201
+        assert accepted.json()["cancelled"] is False
+        assert api.get("/bookings").json() == [cancelled.json(), accepted.json()]
+
+
 def test_non_owner_cannot_cancel(tmp_path: Path) -> None:
     database = tmp_path / "booking.sqlite3"
     initialize(database)
