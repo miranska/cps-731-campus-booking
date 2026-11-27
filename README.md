@@ -130,16 +130,33 @@ pinned `tzdata` package supplies timezone data when the OS does not.
 Timezone conversion and daylight-saving transition scenarios are outside this
 simulation. Use ordinary dates away from those transitions.
 
-Start must be strictly after now; end must be strictly after start. Duration
+Start must be strictly after now and end must be strictly after start. Duration
 must be at most eight hours, including overnight bookings. Intervals include
-start and exclude end, so 10:00–11:00 and 11:00–12:00 are adjacent and permitted.
-Any overlap with an uncancelled booking on the same resource is rejected;
-identical times on different resources are permitted.
+the start and exclude the end. Each room needs **at least 15 minutes** between
+active bookings, regardless of who books first. Devices allow back-to-back
+bookings. Overlaps on the same resource and shorter room gaps both return
+`409` with detail `Resource is already booked for this interval`. Different
+resources can be booked for identical times.
+
+To try the cutoff in `/docs`, choose a future date when both Study room A (ID 1)
+and Camera 01 (ID 3) are available. Book each from 10:00 to 11:00. Then try
+these `POST /bookings` requests in order for the same date.
+
+| Resource | Requested interval | Result |
+| --- | --- | --- |
+| Study room A | 11:14:59–12:00 | 409, the gap is one second short |
+| Study room A | 11:15–12:00 | 201, the gap is exactly 15 minutes |
+| Camera 01 | 11:00–12:00 | 201, the next user can start at 11:00 |
+
+The same room cutoff applies when booking an earlier slot. If the room is
+already booked from 10:00, a preceding booking may end at 09:45. The gap can
+also cross midnight. A room booking ending at 23:55 allows the next one to
+start at 00:10 the following day.
 
 Only the owner may cancel a booking. An active booking can be cancelled strictly
 before its start; at or after start the request returns 409 and preserves it.
 Cancellation returns the same record with `cancelled: true`, retains it in reads
-and releases its slot for another valid booking. Owner retries return 200 with
+and releases its slot and any surrounding room gap. Owner retries return 200 with
 the unchanged cancelled record, even after the original start. Ownership is
 checked before retry handling, and cancelled state before the start-time rule.
 
