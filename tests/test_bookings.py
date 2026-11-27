@@ -34,14 +34,64 @@ def book(
     )
 
 
-def test_room_rejects_short_gap(client: TestClient) -> None:
+def assert_booking_conflict(response: Response) -> None:
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Resource is already booked for this interval"}
+
+
+@pytest.mark.parametrize(
+    "start,end,user_id",
+    [
+        pytest.param("11:14:00", "12:00:00", 2, id="14-minutes-after"),
+        pytest.param("09:00:00", "09:46:00", 1, id="14-minutes-before"),
+        pytest.param("11:00:00", "12:00:00", 1, id="back-to-back"),
+        pytest.param("11:14:59.999999", "12:00:00", 2, id="just-inside-gap-after"),
+        pytest.param("09:00:00", "09:45:00.000001", 2, id="just-inside-gap-before"),
+    ],
+)
+def test_room_rejects_short_gap(
+    client: TestClient, start: str, end: str, user_id: int
+) -> None:
     existing = book(client, "10:00:00", "11:00:00")
     assert existing.status_code == 201
 
-    response = book(client, "11:14:00", "12:00:00", user_id=2)
-    assert response.status_code == 409
-    assert response.json() == {"detail": "Resource is already booked for this interval"}
+    assert_booking_conflict(book(client, start, end, user_id=user_id))
     assert client.get("/bookings").json() == [existing.json()]
+
+
+@pytest.mark.parametrize(
+    "start,end", [("09:00:00", "09:45:00"), ("11:15:00", "12:00:00")]
+)
+def test_room_accepts_exactly_15_minutes(
+    client: TestClient, start: str, end: str
+) -> None:
+    assert book(client, "10:00:00", "11:00:00").status_code == 201
+    assert book(client, start, end).status_code == 201
+
+
+def test_room_booking_must_clear_both_neighbours(client: TestClient) -> None:
+    first = book(client, "10:00:00", "11:00:00")
+    second = book(client, "12:00:00", "13:00:00")
+    assert first.status_code == second.status_code == 201
+
+    assert_booking_conflict(book(client, "11:15:00", "11:46:00"))
+    assert client.get("/bookings").json() == [first.json(), second.json()]
+    assert book(client, "11:15:00", "11:45:00").status_code == 201
+
+
+def test_room_can_be_booked_through_last_supported_timestamp(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/bookings",
+        headers={"X-User-ID": "1"},
+        json={
+            "resource_id": 1,
+            "start": "9999-12-31T23:30:00",
+            "end": "9999-12-31T23:59:59.999999",
+        },
+    )
+    assert response.status_code == 201
 
 
 def test_create_retrieve_and_list_booking(client: TestClient) -> None:
@@ -76,7 +126,7 @@ def test_create_retrieve_and_list_booking(client: TestClient) -> None:
         ({}, {}),
         ({}, {"X-User-ID": "Alex"}),
         ({"owner_id": 2}, {"X-User-ID": "1"}),
-        ({"start": "2030-01-15T08:00:00"}, {"X-User-ID": "1"}),
+        ({"start": "2030-01-15T07:59:59"}, {"X-User-ID": "1"}),
         ({"end": "2030-01-15T09:00:00"}, {"X-User-ID": "1"}),
         ({"end": "2030-01-15T20:00:00"}, {"X-User-ID": "1"}),
         ({"start": "bad timestamp"}, {"X-User-ID": "1"}),
