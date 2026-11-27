@@ -2,6 +2,8 @@
 
 Status: ready-for-agent
 
+Resolution: implemented
+
 ## Problem Statement
 
 Facilities needs 15 minutes between uses of a room. Today, someone can book a room from 10:00 to 11:00 and another person can reserve it from 11:00 onward. Both receive confirmations, leaving Facilities no time between bookings.
