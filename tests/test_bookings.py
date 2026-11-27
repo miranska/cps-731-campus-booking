@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
 
 from booking.database import initialize
 from booking.main import create_app
@@ -14,9 +15,33 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
     database = tmp_path / "booking.sqlite3"
     initialize(database)
     with TestClient(
-        create_app(database, clock=lambda: datetime(2030, 1, 15, 9))
+        create_app(database, clock=lambda: datetime(2030, 1, 15, 8))
     ) as api:
         yield api
+
+
+def book(
+    client: TestClient, start: str, end: str, *, resource_id: int = 1, user_id: int = 1
+) -> Response:
+    return client.post(
+        "/bookings",
+        headers={"X-User-ID": str(user_id)},
+        json={
+            "resource_id": resource_id,
+            "start": f"2030-01-15T{start}",
+            "end": f"2030-01-15T{end}",
+        },
+    )
+
+
+def test_room_rejects_short_gap(client: TestClient) -> None:
+    existing = book(client, "10:00:00", "11:00:00")
+    assert existing.status_code == 201
+
+    response = book(client, "11:14:00", "12:00:00", user_id=2)
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Resource is already booked for this interval"}
+    assert client.get("/bookings").json() == [existing.json()]
 
 
 def test_create_retrieve_and_list_booking(client: TestClient) -> None:
