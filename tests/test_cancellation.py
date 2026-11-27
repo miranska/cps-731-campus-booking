@@ -1,6 +1,8 @@
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+from booking_assertions import assert_booking_list, assert_booking_request
 from fastapi.testclient import TestClient
 
 from booking.database import initialize
@@ -107,3 +109,35 @@ def test_cancellation_documents_responses_and_identity(tmp_path: Path) -> None:
             if item["name"].lower() == "x-user-id"
         )
         assert identity["required"] is True
+
+
+@pytest.mark.parametrize(
+    "end,status_after_cancel",
+    [
+        pytest.param("11:45:00", 201, id="cancelled-booking-releases-gap"),
+        pytest.param("11:46:00", 409, id="active-booking-keeps-gap"),
+    ],
+)
+def test_room_booking_gaps_after_cancellation(
+    client: TestClient, end: str, status_after_cancel: int
+) -> None:
+    bookings = []
+    morning = ("2030-01-15T10:00:00", "2030-01-15T11:00:00")
+    noon = ("2030-01-15T12:00:00", "2030-01-15T13:00:00")
+    requested = ("2030-01-15T11:05:00", f"2030-01-15T{end}")
+    assert_booking_request(client, bookings, *morning, owner_id=1)
+    assert_booking_request(client, bookings, *noon, owner_id=2)
+    assert_booking_request(client, bookings, *requested, owner_id=2, status=409)
+
+    cancelled = {**bookings[0], "cancelled": True}
+    response = client.post(
+        f"/bookings/{cancelled['id']}/cancel", headers={"X-User-ID": "1"}
+    )
+    assert response.status_code == 200
+    assert response.json() == cancelled
+    bookings[0] = cancelled
+    assert_booking_list(client, bookings)
+
+    assert_booking_request(
+        client, bookings, *requested, owner_id=2, status=status_after_cancel
+    )
