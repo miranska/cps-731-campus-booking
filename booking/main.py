@@ -65,15 +65,25 @@ def create_app(
     ) -> Booking:
         """Create a future booking of at most eight hours owned by X-User-ID.
 
-        End must follow start; overnight intervals are allowed. Intervals include
-        start and exclude end. Overlapping uncancelled bookings on the same
-        resource return 409. Sequential requests only; simultaneous requests
-        may race between availability checking and insertion.
+        End must follow start. Overnight bookings are allowed. Intervals include
+        the start and exclude the end.
+
+        A new room booking must leave at least 15 minutes before or after each
+        uncancelled booking of the same room. Exactly 15 minutes is allowed.
+        Existing confirmations stand, including bookings closer together.
+        Cancellation releases the slot and its gap. Different rooms are independent.
+        Bookings of the same device may be back-to-back.
+
+        For compatibility, an overlap on the same resource or a short room gap
+        returns HTTP 409 with the detail `Resource is already booked for this interval`.
+        This guarantee covers sequential requests. Simultaneous requests can
+        both see the room or device as available and both receive confirmations.
         """
         with Session(engine) as session:
             if session.get(User, x_user_id) is None:
                 raise HTTPException(404, "Unknown user")
-            if session.get(Resource, request.resource_id) is None:
+            resource = session.get(Resource, request.resource_id)
+            if resource is None:
                 raise HTTPException(404, "Unknown resource")
             if request.start <= clock():
                 raise HTTPException(422, "Start must be in the future")
@@ -81,12 +91,16 @@ def create_app(
                 raise HTTPException(422, "End must be after start")
             if request.end - request.start > timedelta(hours=8):
                 raise HTTPException(422, "Duration must be at most eight hours")
+            gap = timedelta(minutes=15) if resource.kind == "room" else timedelta()
+            # Keep the search window within the range of representable timestamps.
+            window_start = request.start - min(gap, request.start - datetime.min)
+            window_end = request.end + min(gap, datetime.max - request.end)
             conflict = session.exec(
                 select(Booking).where(
                     Booking.resource_id == request.resource_id,
                     col(Booking.cancelled).is_(False),
-                    Booking.start < request.end,
-                    Booking.end > request.start,
+                    Booking.start < window_end,
+                    Booking.end > window_start,
                 )
             ).first()
             if conflict is not None:

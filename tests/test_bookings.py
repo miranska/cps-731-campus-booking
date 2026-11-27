@@ -4,9 +4,12 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
+from sqlmodel import Session
 
-from booking.database import initialize
+from booking.database import initialize, make_engine
 from booking.main import create_app
+from booking.models import Booking
 
 
 @pytest.fixture
@@ -14,9 +17,83 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
     database = tmp_path / "booking.sqlite3"
     initialize(database)
     with TestClient(
-        create_app(database, clock=lambda: datetime(2030, 1, 15, 9))
+        create_app(database, clock=lambda: datetime(2030, 1, 15, 8))
     ) as api:
         yield api
+
+
+def book(
+    client: TestClient, start: str, end: str, *, resource_id: int = 1, user_id: int = 1
+) -> Response:
+    return client.post(
+        "/bookings",
+        headers={"X-User-ID": str(user_id)},
+        json={
+            "resource_id": resource_id,
+            "start": f"2030-01-15T{start}",
+            "end": f"2030-01-15T{end}",
+        },
+    )
+
+
+def assert_booking_conflict(response: Response) -> None:
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Resource is already booked for this interval"}
+
+
+@pytest.mark.parametrize(
+    "start,end,user_id",
+    [
+        pytest.param("11:14:00", "12:00:00", 2, id="14-minutes-after"),
+        pytest.param("09:00:00", "09:46:00", 1, id="14-minutes-before"),
+        pytest.param("11:00:00", "12:00:00", 1, id="back-to-back"),
+        pytest.param("11:14:59.999999", "12:00:00", 2, id="just-inside-gap-after"),
+        pytest.param("09:00:00", "09:45:00.000001", 2, id="just-inside-gap-before"),
+    ],
+)
+def test_room_rejects_short_gap(
+    client: TestClient, start: str, end: str, user_id: int
+) -> None:
+    existing = book(client, "10:00:00", "11:00:00")
+    assert existing.status_code == 201
+
+    assert_booking_conflict(book(client, start, end, user_id=user_id))
+    assert client.get("/bookings").json() == [existing.json()]
+
+
+@pytest.mark.parametrize(
+    "start,end", [("09:00:00", "09:45:00"), ("11:15:00", "12:00:00")]
+)
+def test_room_accepts_exactly_15_minutes(
+    client: TestClient, start: str, end: str
+) -> None:
+    assert book(client, "10:00:00", "11:00:00").status_code == 201
+    assert book(client, start, end).status_code == 201
+
+
+def test_room_booking_must_clear_both_neighbours(client: TestClient) -> None:
+    first = book(client, "10:00:00", "11:00:00")
+    second = book(client, "12:00:00", "13:00:00")
+    assert first.status_code == second.status_code == 201
+
+    assert_booking_conflict(book(client, "11:15:00", "11:46:00"))
+    assert client.get("/bookings").json() == [first.json(), second.json()]
+    assert book(client, "11:15:00", "11:45:00").status_code == 201
+
+
+def test_room_can_be_booked_through_last_supported_timestamp(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/bookings",
+        headers={"X-User-ID": "1"},
+        json={
+            "resource_id": 1,
+            "start": "9999-12-31T23:30:00",
+            "end": "9999-12-31T23:59:59.999999",
+        },
+    )
+    assert response.status_code == 201
 
 
 def test_create_retrieve_and_list_booking(client: TestClient) -> None:
@@ -43,6 +120,59 @@ def test_create_retrieve_and_list_booking(client: TestClient) -> None:
     assert client.get("/bookings").json() == [expected]
 
 
+def test_rooms_can_be_booked_at_the_same_time(client: TestClient) -> None:
+    for room in (1, 2):
+        assert book(client, "10:00:00", "11:00:00", resource_id=room).status_code == 201
+
+
+def test_device_rejects_overlap_and_accepts_back_to_back(client: TestClient) -> None:
+    camera = 3
+    existing = book(client, "10:00:00", "11:00:00", resource_id=camera)
+    assert existing.status_code == 201
+    assert_booking_conflict(book(client, "10:59:00", "12:00:00", resource_id=camera))
+    assert client.get("/bookings").json() == [existing.json()]
+    assert book(client, "11:00:00", "12:00:00", resource_id=camera).status_code == 201
+
+
+def test_existing_confirmations_with_short_gap_are_honoured(tmp_path: Path) -> None:
+    database = tmp_path / "booking.sqlite3"
+    initialize(database)
+    # These two confirmations were valid under the original overlap-only rule.
+    confirmations = [
+        Booking(
+            id=1,
+            owner_id=1,
+            resource_id=1,
+            start=datetime(2030, 1, 15, 10),
+            end=datetime(2030, 1, 15, 11),
+        ),
+        Booking(
+            id=2,
+            owner_id=2,
+            resource_id=1,
+            start=datetime(2030, 1, 15, 11, 10),
+            end=datetime(2030, 1, 15, 12),
+        ),
+    ]
+    expected = [booking.model_dump(mode="json") for booking in confirmations]
+    engine = make_engine(database)
+    with Session(engine) as session:
+        session.add_all(confirmations)
+        session.commit()
+    engine.dispose()
+
+    with TestClient(
+        create_app(database, clock=lambda: datetime(2030, 1, 15, 8))
+    ) as api:
+        assert api.get("/bookings").json() == expected
+        assert_booking_conflict(book(api, "09:00:00", "09:46:00"))
+        assert_booking_conflict(book(api, "12:14:00", "13:00:00"))
+        assert api.get("/bookings").json() == expected
+        new_booking = book(api, "12:15:00", "13:00:00")
+        assert new_booking.status_code == 201
+        assert api.get("/bookings").json() == [*expected, new_booking.json()]
+
+
 @pytest.mark.parametrize(
     "changes,headers",
     [
@@ -51,7 +181,7 @@ def test_create_retrieve_and_list_booking(client: TestClient) -> None:
         ({}, {}),
         ({}, {"X-User-ID": "Alex"}),
         ({"owner_id": 2}, {"X-User-ID": "1"}),
-        ({"start": "2030-01-15T08:00:00"}, {"X-User-ID": "1"}),
+        ({"start": "2030-01-15T07:59:59"}, {"X-User-ID": "1"}),
         ({"end": "2030-01-15T09:00:00"}, {"X-User-ID": "1"}),
         ({"end": "2030-01-15T20:00:00"}, {"X-User-ID": "1"}),
         ({"start": "bad timestamp"}, {"X-User-ID": "1"}),
