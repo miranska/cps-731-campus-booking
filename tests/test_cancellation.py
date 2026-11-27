@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from booking_assertions import assert_booking_list, assert_booking_request
+from booking_assertions import assert_booking_list, submit_and_check_booking
 from fastapi.testclient import TestClient
 
 from booking.database import initialize
@@ -125,9 +125,9 @@ def test_room_booking_gaps_after_cancellation(
     morning = ("2030-01-15T10:00:00", "2030-01-15T11:00:00")
     noon = ("2030-01-15T12:00:00", "2030-01-15T13:00:00")
     requested = ("2030-01-15T11:05:00", f"2030-01-15T{end}")
-    assert_booking_request(client, bookings, *morning, owner_id=1)
-    assert_booking_request(client, bookings, *noon, owner_id=2)
-    assert_booking_request(client, bookings, *requested, owner_id=2, status=409)
+    submit_and_check_booking(client, bookings, *morning, owner_id=1)
+    submit_and_check_booking(client, bookings, *noon, owner_id=2)
+    submit_and_check_booking(client, bookings, *requested, owner_id=2, status=409)
 
     cancelled = {**bookings[0], "cancelled": True}
     response = client.post(
@@ -138,6 +138,6 @@ def test_room_booking_gaps_after_cancellation(
     bookings[0] = cancelled
     assert_booking_list(client, bookings)
 
-    assert_booking_request(
+    submit_and_check_booking(
         client, bookings, *requested, owner_id=2, status=status_after_cancel
     )

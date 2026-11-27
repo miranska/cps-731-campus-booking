@@ -3,7 +3,7 @@ from pathlib import Path
 from shutil import copyfile
 
 import pytest
-from booking_assertions import assert_booking_list, assert_booking_request
+from booking_assertions import assert_booking_list, submit_and_check_booking
 from fastapi.testclient import TestClient
 from fixtures.before_gap import CONFIRMATIONS
 
@@ -29,7 +29,7 @@ def test_room_bookings_confirmed_before_the_gap_rule(
     with TestClient(app) as api:
         bookings = list(CONFIRMATIONS)
         assert_booking_list(api, bookings)
-        assert_booking_request(
+        submit_and_check_booking(
             api,
             bookings,
             f"2030-01-15T{start}",

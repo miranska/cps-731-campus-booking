@@ -1,5 +1,5 @@
 import pytest
-from booking_assertions import assert_booking_request
+from booking_assertions import submit_and_check_booking
 from fastapi.testclient import TestClient
 
 
@@ -24,13 +24,13 @@ def test_room_booking_cutoff(
     earlier = ("2030-01-15T10:00:00", "2030-01-15T11:00:00")
     later = (f"2030-01-15T{later_start}", "2030-01-15T12:00:00")
     first, second = (later, earlier) if later_first else (earlier, later)
-    assert_booking_request(client, bookings, *first, owner_id=1)
-    assert_booking_request(client, bookings, *second, owner_id=2, status=status)
+    submit_and_check_booking(client, bookings, *first, owner_id=1)
+    submit_and_check_booking(client, bookings, *second, owner_id=2, status=status)
 
 
 def test_room_booking_can_end_at_latest_timestamp(client: TestClient) -> None:
     bookings = []
-    assert_booking_request(
+    submit_and_check_booking(
         client,
         bookings,
         "9999-12-31T23:45:00",
@@ -44,10 +44,10 @@ def test_room_booking_gap_crosses_midnight(
     client: TestClient, next_start: str, status: int
 ) -> None:
     bookings = []
-    assert_booking_request(
+    submit_and_check_booking(
         client, bookings, "2030-01-15T22:55:00", "2030-01-15T23:55:00", owner_id=1
     )
-    assert_booking_request(
+    submit_and_check_booking(
         client,
         bookings,
         f"2030-01-16T{next_start}",
@@ -69,13 +69,13 @@ def test_room_booking_between_two_active_bookings(
     client: TestClient, start: str, end: str, status: int
 ) -> None:
     bookings = []
-    assert_booking_request(
+    submit_and_check_booking(
         client, bookings, "2030-01-15T10:00:00", "2030-01-15T11:00:00", owner_id=1
     )
-    assert_booking_request(
+    submit_and_check_booking(
         client, bookings, "2030-01-15T12:00:00", "2030-01-15T13:00:00", owner_id=1
     )
-    assert_booking_request(
+    submit_and_check_booking(
         client,
         bookings,
         f"2030-01-15T{start}",
@@ -88,7 +88,7 @@ def test_room_booking_between_two_active_bookings(
 def test_different_rooms_can_be_booked_at_the_same_time(client: TestClient) -> None:
     bookings = []
     for room_id in (1, 2):
-        assert_booking_request(
+        submit_and_check_booking(
             client,
             bookings,
             "2030-01-15T10:00:00",
@@ -103,7 +103,7 @@ def test_device_bookings_allow_adjacency_and_reject_overlap(
     client: TestClient, start: str, status: int
 ) -> None:
     bookings = []
-    assert_booking_request(
+    submit_and_check_booking(
         client,
         bookings,
         "2030-01-15T10:00:00",
@@ -111,7 +111,7 @@ def test_device_bookings_allow_adjacency_and_reject_overlap(
         resource_id=3,
         owner_id=1,
     )
-    assert_booking_request(
+    submit_and_check_booking(
         client,
         bookings,
         f"2030-01-15T{start}",

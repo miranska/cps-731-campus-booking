@@ -7,7 +7,7 @@ def assert_booking_list(client: TestClient, expected: list[dict]) -> None:
     assert response.json() == expected
 
 
-def assert_booking_request(
+def submit_and_check_booking(
     client: TestClient,
     expected_bookings: list[dict],
     start: str,
