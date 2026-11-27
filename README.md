@@ -130,16 +130,26 @@ pinned `tzdata` package supplies timezone data when the OS does not.
 Timezone conversion and daylight-saving transition scenarios are outside this
 simulation. Use ordinary dates away from those transitions.
 
-Start must be strictly after now; end must be strictly after start. Duration
-must be at most eight hours, including overnight bookings. Intervals include
-start and exclude end, so 10:00–11:00 and 11:00–12:00 are adjacent and permitted.
-Any overlap with an uncancelled booking on the same resource is rejected;
-identical times on different resources are permitted.
+Start must be strictly after now and end must be strictly after start. Duration
+must be at most eight hours, including overnight bookings. Intervals include the
+start and exclude the end. Each resource is booked independently, so two rooms
+can be booked for the same time.
+
+- **Rooms.** A new booking must leave at least 15 minutes between it and every
+  uncancelled booking of the same room, regardless of owner. For a room booked
+  from 10:00 to 11:00, an earlier booking may end at 09:45 and a later booking
+  may start at 11:15. An 11:14 start is rejected. All existing confirmations
+  are honoured, including bookings that were accepted less than 15 minutes apart.
+- **Devices.** Bookings of the same device may be back-to-back. A camera booked
+  until 11:00 can be booked again at 11:00.
+
+For compatibility, both an overlap on the same resource and a short room gap
+return HTTP 409 with the existing detail `Resource is already booked for this interval`.
 
 Only the owner may cancel a booking. An active booking can be cancelled strictly
 before its start; at or after start the request returns 409 and preserves it.
 Cancellation returns the same record with `cancelled: true`, retains it in reads
-and releases its slot for another valid booking. Owner retries return 200 with
+and immediately releases its slot and any room gap. Owner retries return 200 with
 the unchanged cancelled record, even after the original start. Ownership is
 checked before retry handling, and cancelled state before the start-time rule.
 
@@ -150,8 +160,8 @@ curl -X POST -H 'X-User-ID: 1' http://127.0.0.1:8000/bookings/1/cancel
 In PowerShell use `curl.exe`. Substitute the ID returned by creation.
 
 These guarantees apply to **sequential requests**. Simultaneous requests can
-both observe availability before either inserts a record. SQLite persistence
-alone does not make the availability check and insertion an atomic reservation.
+both observe availability before either inserts a record, so both can receive
+confirmations even when the bookings conflict.
 
 Errors use `{"detail": "message"}` consistently:
 

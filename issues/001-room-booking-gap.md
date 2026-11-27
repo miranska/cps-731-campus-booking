@@ -1,6 +1,6 @@
 # 001 · Require 15 minutes between bookings of the same room
 
-**Status** · Agreed, awaiting implementation
+**Status** · Implemented
 
 When someone requests a room, Facilities requires at least 15 minutes between the end of the earlier booking and the start of the later one. Check every uncancelled booking for that room, regardless of who booked it or which request came first. Exactly 15 minutes is sufficient.
 

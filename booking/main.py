@@ -65,10 +65,19 @@ def create_app(
     ) -> Booking:
         """Create a future booking of at most eight hours owned by X-User-ID.
 
-        End must follow start; overnight intervals are allowed. Intervals include
-        start and exclude end. Overlapping uncancelled bookings on the same
-        resource return 409. Sequential requests only; simultaneous requests
-        may race between availability checking and insertion.
+        End must follow start. Overnight bookings are allowed. Intervals include
+        the start and exclude the end.
+
+        A new room booking must leave at least 15 minutes before or after each
+        uncancelled booking of the same room. Exactly 15 minutes is allowed.
+        Existing confirmations stand, including bookings closer together.
+        Cancellation releases the slot and its gap. Different rooms are independent.
+        Bookings of the same device may be back-to-back.
+
+        For compatibility, an overlap on the same resource or a short room gap
+        returns HTTP 409 with the detail `Resource is already booked for this interval`.
+        This guarantee covers sequential requests. Simultaneous requests can
+        both see the room or device as available and both receive confirmations.
         """
         with Session(engine) as session:
             if session.get(User, x_user_id) is None:
